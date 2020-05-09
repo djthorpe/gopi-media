@@ -7,11 +7,13 @@
   For Licensing and Usage information, please see LICENSE.md
 */
 
-package sqlite
+package medialib
 
 import (
 	// Frameworks
 	gopi "github.com/djthorpe/gopi"
+	media "github.com/djthorpe/gopi-media"
+	sqlite "github.com/djthorpe/sqlite"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -19,15 +21,18 @@ import (
 
 func init() {
 	gopi.RegisterModule(gopi.Module{
-		Name: "sqlite",
-		Type: gopi.MODULE_TYPE_OTHER,
+		Name:     "media/library",
+		Requires: []string{"media/ffmpeg", "db/sqobj"},
+		Type:     gopi.MODULE_TYPE_OTHER,
 		Config: func(config *gopi.AppConfig) {
-			config.AppFlags.FlagString("sqlite.path", ":memory:", "Path to database")
+			config.AppFlags.FlagBool("medialib.recursive", true, "Scan folders recursively")
 		},
 		New: func(app *gopi.AppInstance) (gopi.Driver, error) {
-			path, _ := app.AppFlags.GetString("sqlite.path")
-			return gopi.Open(Config{
-				Path: path,
+			recursive, _ := app.AppFlags.GetBool("medialib.recursive")
+			return gopi.Open(MediaLib{
+				Recursive: recursive,
+				Media:     app.ModuleInstance("media/ffmpeg").(media.Media),
+				SQObj:     app.ModuleInstance("db/sqobj").(sqlite.Objects),
 			}, app.Logger)
 		},
 	})

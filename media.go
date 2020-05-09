@@ -1,6 +1,6 @@
 /*
 	Go Language Raspberry Pi Interface
-	(c) Copyright David Thorpe 2018
+	(c) Copyright David Thorpe 2019
 	All Rights Reserved
 	For Licensing and Usage information, please see LICENSE.md
 */
@@ -8,7 +8,8 @@
 package media
 
 import (
-	// Frameworks
+	"strings"
+
 	"github.com/djthorpe/gopi"
 )
 
@@ -16,7 +17,11 @@ import (
 // TYPES
 
 type MetadataKey uint32
-type MediaType uint32
+type MediaType int64
+type MediaEventType uint
+
+////////////////////////////////////////////////////////////////////////////////
+// INTERFACES
 
 type Media interface {
 	gopi.Driver
@@ -24,9 +29,6 @@ type Media interface {
 	// Open and close media files
 	Open(filename string) (MediaFile, error)
 	Destroy(MediaFile) error
-
-	// Guess type by filename
-	TypeFor(filename string) MediaType
 }
 
 type MediaItem interface {
@@ -38,9 +40,12 @@ type MediaItem interface {
 	// Return type for the media item
 	Type() MediaType
 
-	// Return additional metadata for the media item
+	// Return all keys included in the metadata
 	Keys() []MetadataKey
-	StringForKey(MetadataKey) string
+
+	// Return additional metadata for the media item and a boolean
+	// value which indicates if the metadata value exists
+	StringForKey(MetadataKey) (string, bool)
 }
 
 type MediaFile interface {
@@ -51,6 +56,10 @@ type MediaFile interface {
 
 	// Probe the file and enumerate the streams
 	Streams() []MediaStream
+
+	// Return artwork associated with the file, both data
+	// and detected format for the artwork data as a mimetype
+	ArtworkData() ([]byte, string)
 }
 
 type MediaStream interface {
@@ -58,27 +67,69 @@ type MediaStream interface {
 	Type() MediaType
 }
 
+type MediaLibrary interface {
+	gopi.Driver
+	gopi.Publisher
+
+	// Scan a path for media files
+	AddPath(string) error
+
+	// Query library for media items
+	Query(MediaQuery) []MediaItem
+}
+
+type MediaEvent interface {
+	gopi.Event
+
+	Type() MediaEventType
+	Item() MediaItem
+	Path() string
+	Error() error
+}
+
+type MediaQuery interface {
+	// MEDIA_TYPE_ALBUM returns all albums
+	// MEDIA_TYPE_MUSIC returns all songs within an album
+	// MEDIA_TYPE_TVSHOW returns all TV shows
+	// MEDIA_TYPE_TVSEASON returns all TV seasons (requires TVSHOW to be set)
+	// MEDIA_TYPE_TVEPISODE returns all TV episodes (requires TVSHOW to be set)
+	// MEDIA_TYPE_MOVIE returns all movies
+	Type() MediaType
+	Limit() uint
+	Offset() uint
+	WhereString(MetadataKey, string)
+	WhereBool(MetadataKey, bool)
+	WhereUint(MetadataKey, uint)
+	WhereYear(MetadataKey, uint)
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // CONSTANTS
 
 const (
-	MEDIA_TYPE_NONE       MediaType = 0
-	MEDIA_TYPE_AUDIO      MediaType = (1 << iota)
-	MEDIA_TYPE_VIDEO      MediaType = (1 << iota)
-	MEDIA_TYPE_IMAGE      MediaType = (1 << iota)
-	MEDIA_TYPE_SUBTITLE   MediaType = (1 << iota)
-	MEDIA_TYPE_DATA       MediaType = (1 << iota)
-	MEDIA_TYPE_ATTACHMENT MediaType = (1 << iota)
-	MEDIA_TYPE_MUSIC      MediaType = (1 << iota)
-	MEDIA_TYPE_ALBUM      MediaType = (1 << iota)
-	MEDIA_TYPE_TVSHOW     MediaType = (1 << iota)
-	MEDIA_TYPE_TVSEASON   MediaType = (1 << iota)
-	MEDIA_TYPE_TVEPISODE  MediaType = (1 << iota)
-	MEDIA_TYPE_AUDIOBOOK  MediaType = (1 << iota)
-	MEDIA_TYPE_MUSICVIDEO MediaType = (1 << iota)
-	MEDIA_TYPE_MOVIE      MediaType = (1 << iota)
-	MEDIA_TYPE_BOOKLET    MediaType = (1 << iota)
-	MEDIA_TYPE_RINGTONE   MediaType = (1 << iota)
+	MEDIA_TYPE_FILE MediaType = (1 << iota)
+	MEDIA_TYPE_AUDIO
+	MEDIA_TYPE_VIDEO
+	MEDIA_TYPE_IMAGE
+	MEDIA_TYPE_SUBTITLE
+	MEDIA_TYPE_DATA
+	MEDIA_TYPE_ATTACHMENT
+	MEDIA_TYPE_MUSIC
+	MEDIA_TYPE_ALBUM
+	MEDIA_TYPE_COMPILATION
+	MEDIA_TYPE_TVSHOW
+	MEDIA_TYPE_TVSEASON
+	MEDIA_TYPE_TVEPISODE
+	MEDIA_TYPE_AUDIOBOOK
+	MEDIA_TYPE_MUSICVIDEO
+	MEDIA_TYPE_MOVIE
+	MEDIA_TYPE_BOOKLET
+	MEDIA_TYPE_RINGTONE
+	MEDIA_TYPE_ARTWORK
+	MEDIA_TYPE_CAPTIONS
+	MEDIA_TYPE_NONE MediaType = 0
+	MEDIA_TYPE_MIN  MediaType = MEDIA_TYPE_FILE
+	MEDIA_TYPE_MAX  MediaType = MEDIA_TYPE_CAPTIONS
 )
 
 var (
@@ -144,6 +195,14 @@ var (
 	// Broadcasting strings
 	METADATA_KEY_SERVICE_NAME     = METADATA_KEY('s', 'n', 't', 'x')
 	METADATA_KEY_SERVICE_PROVIDER = METADATA_KEY('s', 'p', 't', 'x')
+)
+
+const (
+	MEDIA_EVENT_FILE_ADDED MediaEventType = iota
+	MEDIA_EVENT_SCAN_START
+	MEDIA_EVENT_SCAN_END
+	MEDIA_EVENT_ERROR
+	MEDIA_EVENT_NONE MediaEventType = 0
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -244,5 +303,77 @@ func (k MetadataKey) String() string {
 		return "METADATA_KEY_GROUPING"
 	default:
 		return "[?? Invalid MetadataKey]"
+	}
+}
+
+func (t MediaType) String() string {
+	if t == MEDIA_TYPE_NONE {
+		return "MEDIA_TYPE_NONE"
+	}
+	parts := ""
+	for flag := MEDIA_TYPE_MIN; flag <= MEDIA_TYPE_MAX; flag <<= 1 {
+		if t&flag == 0 {
+			continue
+		}
+		switch flag {
+		case MEDIA_TYPE_FILE:
+			parts += "|" + "MEDIA_TYPE_FILE"
+		case MEDIA_TYPE_AUDIO:
+			parts += "|" + "MEDIA_TYPE_AUDIO"
+		case MEDIA_TYPE_VIDEO:
+			parts += "|" + "MEDIA_TYPE_VIDEO"
+		case MEDIA_TYPE_IMAGE:
+			parts += "|" + "MEDIA_TYPE_IMAGE"
+		case MEDIA_TYPE_SUBTITLE:
+			parts += "|" + "MEDIA_TYPE_SUBTITLE"
+		case MEDIA_TYPE_DATA:
+			parts += "|" + "MEDIA_TYPE_DATA"
+		case MEDIA_TYPE_ATTACHMENT:
+			parts += "|" + "MEDIA_TYPE_ATTACHMENT"
+		case MEDIA_TYPE_MUSIC:
+			parts += "|" + "MEDIA_TYPE_MUSIC"
+		case MEDIA_TYPE_ALBUM:
+			parts += "|" + "MEDIA_TYPE_ALBUM"
+		case MEDIA_TYPE_COMPILATION:
+			parts += "|" + "MEDIA_TYPE_COMPILATION"
+		case MEDIA_TYPE_TVSHOW:
+			parts += "|" + "MEDIA_TYPE_TVSHOW"
+		case MEDIA_TYPE_TVSEASON:
+			parts += "|" + "MEDIA_TYPE_TVSEASON"
+		case MEDIA_TYPE_TVEPISODE:
+			parts += "|" + "MEDIA_TYPE_TVEPISODE"
+		case MEDIA_TYPE_AUDIOBOOK:
+			parts += "|" + "MEDIA_TYPE_AUDIOBOOK"
+		case MEDIA_TYPE_MUSICVIDEO:
+			parts += "|" + "MEDIA_TYPE_MUSICVIDEO"
+		case MEDIA_TYPE_MOVIE:
+			parts += "|" + "MEDIA_TYPE_MOVIE"
+		case MEDIA_TYPE_BOOKLET:
+			parts += "|" + "MEDIA_TYPE_BOOKLET"
+		case MEDIA_TYPE_RINGTONE:
+			parts += "|" + "MEDIA_TYPE_RINGTONE"
+		case MEDIA_TYPE_ARTWORK:
+			parts += "|" + "MEDIA_TYPE_ARTWORK"
+		case MEDIA_TYPE_CAPTIONS:
+			parts += "|" + "MEDIA_TYPE_CAPTIONS"
+		default:
+			parts += "|" + "[?? Invalid MediaType value]"
+		}
+	}
+	return strings.Trim(parts, "|")
+}
+
+func (t MediaEventType) String() string {
+	switch t {
+	case MEDIA_EVENT_FILE_ADDED:
+		return "MEDIA_EVENT_FILE_ADDED"
+	case MEDIA_EVENT_SCAN_START:
+		return "MEDIA_EVENT_SCAN_START"
+	case MEDIA_EVENT_SCAN_END:
+		return "MEDIA_EVENT_SCAN_END"
+	case MEDIA_EVENT_ERROR:
+		return "MEDIA_EVENT_ERROR"
+	default:
+		return "[?? Invalid MediaEventType value]"
 	}
 }
